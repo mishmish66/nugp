@@ -71,8 +71,8 @@ def get_prelogin_url() -> PreloginURL:
     try:
         xml_tree = ET.fromstring(xml_string)
     except Exception as e:
-        exception_str = f"Failed to parse xml contining prelogin url: {xml_string}"
-        raise PreloginXMLException(exception_str) from e
+        exception_string = f"Failed to parse xml contining prelogin url: {xml_string}"
+        raise PreloginXMLException(exception_string) from e
 
     saml_request_element = xml_tree.find("saml-request")
 
@@ -144,18 +144,18 @@ def parse_xml_comment(xml_comment: str) -> PreloginCookie:
     try:
         xml_tree = ET.fromstring(xml_string)
     except Exception as e:
-        exception_str = f"Failed to parse xml contining cookie: {xml_string}"
-        raise PreloginXMLException(exception_str) from e
+        exception_string = f"Failed to parse xml contining cookie: {xml_string}"
+        raise PreloginXMLException(exception_string) from e
 
     cookie_element = xml_tree.find("prelogin-cookie")
 
     if cookie_element is None:
-        exception_str = f"Failed to locate prelogin-cookie field: {xml_string}"
-        raise PreloginXMLException(exception_str)
+        exception_string = f"Failed to locate prelogin-cookie field: {xml_string}"
+        raise PreloginXMLException(exception_string)
 
     if cookie_element.text is None:
-        exception_str = f"prelogin-cookie field contained no text: {xml_string}"
-        raise PreloginXMLException(exception_str)
+        exception_string = f"prelogin-cookie field contained no text: {xml_string}"
+        raise PreloginXMLException(exception_string)
 
     return cast("PreloginCookie", cookie_element.text)
 
