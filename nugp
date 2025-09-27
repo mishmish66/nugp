@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Misha Lvovsky
+"""
+nugp: Grab a GlobalProtect prelogin cookie via an embedded GTK4/WebKit login.
+
+Notes:
+  - Prints the prelogin cookie to stdout on success.
+  - Requires GTK 4 and WebKitGTK 6 GI bindings (gi).
+"""
+
+import ssl
+import xml.etree.ElementTree as ET
+import base64
+import urllib
+import urllib.request
+import urllib.parse
+import gi
+import os
+from typing import cast
+import sys
+
+data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+cache_home = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("WebKit", "6.0")
+
+PreloginURL = str
+AuthResult = str
+PreloginCookie = str
+
+
+class PreloginXMLException(Exception):
+    pass
+
+
+class LoginPopupException(Exception):
+    pass
+
+
+def get_prelogin_url() -> PreloginURL:
+    vpn_url = "https://vpn.northeastern.edu"
+    auth_url = vpn_url + "/global-protect/prelogin.esp"
+
+    param_dict = {
+        "clientVer": "4100",
+        "ipv6-support": "yes",
+        "clientos": "Linux",
+        "default-browser": "1",
+        "cas-support": "yes",
+        "tmp": "tmp",
+    }
+
+    form_data = urllib.parse.urlencode(param_dict).encode("utf-8")
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = True
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.load_default_certs()
+    # ↓ Allow unsafe legacy renegotiation (OpenSSL 3)
+    if hasattr(ssl, "OP_LEGACY_SERVER_CONNECT"):
+        ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
+
+    auth_request = urllib.request.Request(url=auth_url, method="POST", data=form_data)
+    auth_request.add_header("User-Agent", "PAN GlobalProtect")
+
+    with urllib.request.urlopen(auth_request, context=ctx) as response:
+        xml_string = response.read()
+
+    try:
+        xml_tree = ET.fromstring(xml_string)
+    except Exception as e:
+        exception_str = f"Failed to parse xml contining prelogin url: {xml_string}"
+        raise PreloginXMLException(exception_str) from e
+
+    saml_request_element = xml_tree.find("saml-request")
+
+    if saml_request_element is None:
+        exception_string = f"XML {xml_string} contained no saml-request field"
+        raise PreloginXMLException(exception_string)
+    if saml_request_element.text is None:
+        exception_string = f"saml_request_element has no text {saml_request_element}"
+        raise PreloginXMLException(exception_string)
+
+    saml_request_text = saml_request_element.text
+    auth_uri = base64.b64decode(saml_request_text).decode()
+
+    return auth_uri
+
+
+def popup_login(auth_url: PreloginURL) -> AuthResult | None:
+    from gi.repository import Gtk, WebKit, GLib, Gio  # type: ignore
+
+    result: AuthResult | None = None
+
+    app = Gtk.Application()
+
+    def on_activate(app):
+        data_dir = os.path.join(data_home, "nugp")
+        cache_dir = os.path.join(cache_home, "nugp")
+        session = WebKit.NetworkSession.new(
+            cache_directory=cache_dir, data_directory=data_dir
+        )
+        cm = session.get_cookie_manager()
+        cm.set_persistent_storage(
+            os.path.join(data_dir, "cookies.sqlite"),
+            WebKit.CookiePersistentStorage.SQLITE,
+        )
+        ctx = WebKit.WebContext.get_default()
+        ctx.register_uri_scheme("globalprotectcallback", gpcallback_handler)
+        # Create window
+        win = Gtk.ApplicationWindow(application=app)
+        webview = WebKit.WebView(network_session=session)
+        webview.load_uri(auth_url)
+        win.set_child(webview)
+        win.present()
+
+    done = False
+
+    def gpcallback_handler(scheme_request: WebKit.URISchemeRequest):
+        nonlocal done, result
+        if done:
+            scheme_request.finish(b"OK", -1, "text/plain")
+            return
+
+        uri: str = scheme_request.get_uri()
+        result = uri.removeprefix("globalprotectcallback:")
+        ok_stream = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes(b"OK"))
+        scheme_request.finish(ok_stream, -1, "text/plain")
+
+        done = True
+        GLib.idle_add(app.quit)
+
+    app.connect("activate", on_activate)
+    app.run(None)
+
+    return result
+
+
+def parse_xml_comment(xml_comment: str) -> PreloginCookie:
+    xml_string = xml_comment.replace("<!--", "", 1).replace(" -->", "", 1).strip()
+
+    try:
+        xml_tree = ET.fromstring(xml_string)
+    except Exception as e:
+        exception_str = f"Failed to parse xml contining cookie: {xml_string}"
+        raise PreloginXMLException(exception_str) from e
+
+    cookie_element = xml_tree.find("prelogin-cookie")
+
+    if cookie_element is None:
+        exception_str = f"Failed to locate prelogin-cookie field: {xml_string}"
+        raise PreloginXMLException(exception_str)
+
+    if cookie_element.text is None:
+        exception_str = f"prelogin-cookie field contained no text: {xml_string}"
+        raise PreloginXMLException(exception_str)
+
+    return cast("PreloginCookie", cookie_element.text)
+
+
+def main() -> None:
+    prelogin_url = get_prelogin_url()
+    encoded_auth_data = popup_login(prelogin_url)
+
+    if encoded_auth_data is None:
+        exception_string = "The login window closed without returning any data"
+        raise LoginPopupException(exception_string)
+
+    xml_comment = base64.b64decode(encoded_auth_data).decode("utf-8")
+    prelogin_cookie = parse_xml_comment(xml_comment)
+
+    sys.stdout.write(prelogin_cookie)
+
+
+if __name__ == "__main__":
+    main()
