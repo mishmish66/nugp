@@ -172,6 +172,7 @@ def main() -> None:
     prelogin_cookie = parse_xml_comment(xml_comment)
 
     sys.stdout.write(prelogin_cookie)
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":
